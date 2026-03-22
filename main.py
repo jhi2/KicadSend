@@ -1,15 +1,401 @@
-from tkinter import ttk, StringVar
-from ttkthemes import ThemedTk
+import tkinter
+from tkinter import ttk, StringVar, PhotoImage, Scrollbar
+from tkinter import filedialog
+import pymsgbox
+import sv_ttk
 import os
 import shutil
-from tkinter.filedialog import askdirectory, askopenfilename
-from tkinter.messagebox import showinfo, showerror
+from pathlib import Path
+
+
+# --- Custom styled file dialog using sv-ttk ---
+class StyledFileDialog:
+    """Custom styled file dialog using sv-ttk theme."""
+
+    def __init__(self, title, filetypes, initial_dir=None):
+        self.result = None
+        self.title = title
+        self.filetypes = filetypes
+        self.initial_dir = initial_dir or os.path.expanduser("~")
+
+        # Create dialog window
+        self.dialog = tkinter.Toplevel(root)
+        self.dialog.title(title)
+        self.dialog.geometry("750x500")
+        self.dialog.transient(root)
+        self.dialog.grab_set()
+
+        # Current path
+        self.current_path = Path(self.initial_dir)
+
+        # Build UI with ttk/sv-ttk
+        self.build_ui()
+
+        # Load files
+        self.refresh_list()
+
+        # Wait for dialog to close
+        self.dialog.wait_window()
+
+    def build_ui(self):
+        # Path frame
+        path_frame = ttk.Frame(self.dialog)
+        path_frame.pack(fill="x", padx=10, pady=(10, 5))
+
+        ttk.Label(path_frame, text="Path:").pack(side="left")
+
+        self.path_var = StringVar(value=str(self.current_path))
+        path_entry = ttk.Entry(path_frame, textvariable=self.path_var, width=50)
+        path_entry.pack(side="left", fill="x", expand=True, padx=5)
+        path_entry.bind("<Return>", lambda e: self.navigate_to(self.path_var.get()))
+
+        # Navigation buttons
+        ttk.Button(path_frame, text="↑", command=self.go_up, width=4).pack(
+            side="left", padx=2
+        )
+        ttk.Button(
+            path_frame,
+            text="Go",
+            command=lambda: self.navigate_to(self.path_var.get()),
+            width=6,
+        ).pack(side="left", padx=2)
+
+        # File list frame
+        list_frame = ttk.Frame(self.dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Scrollbars
+        yscroll = ttk.Scrollbar(list_frame, orient="vertical")
+        yscroll.pack(side="right", fill="y")
+
+        xscroll = ttk.Scrollbar(list_frame, orient="horizontal")
+        xscroll.pack(side="bottom", fill="x")
+
+        # File listbox using ttk Treeview
+        columns = ("name", "size", "modified")
+        self.file_list = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="tree headings",
+            yscrollcommand=yscroll.set,
+            xscrollcommand=xscroll.set,
+        )
+        yscroll.config(command=self.file_list.yview)
+        xscroll.config(command=self.file_list.xview)
+
+        self.file_list.column("#0", width=300, minwidth=200)
+        self.file_list.column("size", width=80, minwidth=60)
+        self.file_list.column("modified", width=150, minwidth=100)
+
+        self.file_list.heading("#0", text="Name")
+        self.file_list.heading("size", text="Size")
+        self.file_list.heading("modified", text="Modified")
+
+        self.file_list.pack(side="left", fill="both", expand=True)
+
+        self.file_list.bind("<Double-Button-1>", self.on_double_click)
+        self.file_list.bind("<Return>", self.on_double_click)
+
+        # Search frame
+        search_frame = ttk.Frame(self.dialog)
+        search_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(search_frame, text="Search:").pack(side="left")
+
+        self.search_var = StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=30)
+        search_entry.pack(side="left", padx=5, fill="x", expand=True)
+        search_entry.bind("<KeyRelease>", lambda e: self.refresh_list())
+
+        # Clear search button
+        ttk.Button(search_frame, text="✕", command=self.clear_search, width=3).pack(
+            side="left", padx=2
+        )
+
+        # Filter frame
+        filter_frame = ttk.Frame(self.dialog)
+        filter_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(filter_frame, text="Files of type:").pack(side="left")
+
+        self.filter_var = StringVar(
+            value=self.filetypes[0][1] if self.filetypes else "*"
+        )
+        filter_combo = ttk.Combobox(
+            filter_frame,
+            textvariable=self.filter_var,
+            state="readonly",
+            values=[ext for _, ext in self.filetypes],
+            width=25,
+        )
+        filter_combo.pack(side="left", padx=5)
+        filter_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
+
+        # Buttons
+        btn_frame = ttk.Frame(self.dialog)
+        btn_frame.pack(fill="x", padx=10, pady=10)
+
+        ttk.Button(btn_frame, text="Open", command=self.open_file).pack(
+            side="right", padx=5
+        )
+        ttk.Button(btn_frame, text="Cancel", command=self.dialog.destroy).pack(
+            side="right", padx=5
+        )
+
+    def refresh_list(self):
+        # Clear existing items
+        for item in self.file_list.get_children():
+            self.file_list.delete(item)
+
+        try:
+            search_term = self.search_var.get().lower()
+            files = []
+            dirs = []
+            filter_ext = self.filter_var.get()
+
+            for item in self.current_path.iterdir():
+                if item.name.startswith("."):
+                    continue
+
+                # Apply search filter
+                if search_term and search_term not in item.name.lower():
+                    continue
+
+                if item.is_dir():
+                    dirs.append(item)
+                elif item.is_file():
+                    # Apply filter
+                    if filter_ext == "*" or item.suffix in [
+                        filter_ext,
+                        filter_ext.replace("*", ""),
+                    ]:
+                        files.append(item)
+
+            # Sort: directories first, then files
+            for d in sorted(dirs, key=lambda x: x.name.lower()):
+                size = ""
+                import datetime
+
+                mtime = datetime.datetime.fromtimestamp(d.stat().st_mtime).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+                self.file_list.insert(
+                    "", "end", text=d.name + "/", values=(size, mtime), tags=("dir",)
+                )
+
+            for f in sorted(files, key=lambda x: x.name.lower()):
+                size = f.stat().st_size
+                if size > 1024 * 1024:
+                    size_str = f"{size / (1024 * 1024):.1f}M"
+                elif size > 1024:
+                    size_str = f"{size / 1024:.1f}K"
+                else:
+                    size_str = f"{size}B"
+                import datetime
+
+                mtime = datetime.datetime.fromtimestamp(f.stat().st_mtime).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+                self.file_list.insert(
+                    "", "end", text=f.name, values=(size_str, mtime), tags=("file",)
+                )
+
+        except PermissionError:
+            pass
+
+    def clear_search(self):
+        self.search_var.set("")
+        self.refresh_list()
+
+    def navigate_to(self, path):
+        new_path = Path(path)
+        if new_path.is_dir():
+            self.current_path = new_path
+            self.path_var.set(str(self.current_path))
+            self.refresh_list()
+
+    def go_up(self):
+        if self.current_path.parent != self.current_path:
+            self.current_path = self.current_path.parent
+            self.path_var.set(str(self.current_path))
+            self.refresh_list()
+
+    def on_double_click(self, event):
+        selection = self.file_list.selection()
+        if selection:
+            item = self.file_list.item(selection[0])
+            name = item["text"]
+            path = self.current_path / name
+
+            if item["tags"] and "dir" in item["tags"]:
+                self.navigate_to(path)
+            else:
+                self.result = str(path)
+                self.dialog.destroy()
+
+    def open_file(self):
+        selection = self.file_list.selection()
+        if selection:
+            item = self.file_list.item(selection[0])
+            if item["tags"] and "file" in item["tags"]:
+                name = item["text"]
+                path = self.current_path / name
+                self.result = str(path)
+                self.dialog.destroy()
+
+
+def styled_open_file(title, filetypes, initial_dir=None):
+    """Open a custom styled file dialog."""
+    dialog = StyledFileDialog(title, filetypes, initial_dir)
+    return dialog.result
+
+
+def styled_ask_directory(title, initial_dir=None):
+    """Open a custom styled directory dialog."""
+
+    # For directory selection, we can use the same dialog but only show directories
+    class DirDialog(StyledFileDialog):
+        def build_ui(self):
+            # Path entry
+            path_frame = tkinter.Frame(self.dialog, bg="#1e1e1e")
+            path_frame.pack(fill="x", padx=10, pady=5)
+
+            tkinter.Label(path_frame, text="Path:", bg="#1e1e1e", fg="#ffffff").pack(
+                side="left"
+            )
+
+            self.path_var = StringVar(value=str(self.current_path))
+            path_entry = tkinter.Entry(
+                path_frame,
+                textvariable=self.path_var,
+                bg="#2d2d2d",
+                fg="#ffffff",
+                insertbackground="#ffffff",
+            )
+            path_entry.pack(side="left", fill="x", expand=True, padx=5)
+            path_entry.bind("<Return>", lambda e: self.navigate_to(self.path_var.get()))
+
+            go_btn = tkinter.Button(
+                path_frame,
+                text="Go",
+                command=lambda: self.navigate_to(self.path_var.get()),
+                bg="#3d3d3d",
+                fg="#ffffff",
+                activebackground="#4d4d4d",
+                relief="flat",
+            )
+            go_btn.pack(side="left", padx=2)
+
+            up_btn = tkinter.Button(
+                path_frame,
+                text="↑",
+                command=self.go_up,
+                bg="#3d3d3d",
+                fg="#ffffff",
+                activebackground="#4d4d4d",
+                relief="flat",
+                width=3,
+            )
+            up_btn.pack(side="left", padx=2)
+
+            # File list frame
+            list_frame = tkinter.Frame(self.dialog, bg="#1e1e1e")
+            list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+            yscroll = Scrollbar(list_frame, orient="vertical")
+            yscroll.pack(side="right", fill="y")
+
+            xscroll = Scrollbar(list_frame, orient="horizontal")
+            xscroll.pack(side="bottom", fill="x")
+
+            self.file_list = tkinter.Listbox(
+                list_frame,
+                bg="#2d2d2d",
+                fg="#ffffff",
+                selectbackground="#0d47a1",
+                selectforeground="#ffffff",
+                font=("Consolas", 10),
+                yscrollcommand=yscroll.set,
+                xscrollcommand=xscroll.set,
+                borderwidth=0,
+                highlightthickness=1,
+                highlightbackground="#3d3d3d",
+                highlightcolor="#4d4d4d",
+            )
+            self.file_list.pack(side="left", fill="both", expand=True)
+            yscroll.config(command=self.file_list.yview)
+            xscroll.config(command=self.file_list.xview)
+
+            self.file_list.bind("<Double-Button-1>", self.on_double_click)
+            self.file_list.bind("<Return>", self.on_double_click)
+
+            # Buttons
+            btn_frame = tkinter.Frame(self.dialog, bg="#1e1e1e")
+            btn_frame.pack(fill="x", padx=10, pady=10)
+
+            tkinter.Button(
+                btn_frame,
+                text="Select",
+                command=self.select_directory,
+                bg="#0d47a1",
+                fg="#ffffff",
+                activebackground="#1565c0",
+                relief="flat",
+                padx=20,
+            ).pack(side="right", padx=5)
+
+            tkinter.Button(
+                btn_frame,
+                text="Cancel",
+                command=self.dialog.destroy,
+                bg="#3d3d3d",
+                fg="#ffffff",
+                activebackground="#4d4d4d",
+                relief="flat",
+                padx=20,
+            ).pack(side="right", padx=5)
+
+        def refresh_list(self):
+            self.file_list.delete(0, "end")
+            try:
+                for item in sorted(self.current_path.iterdir()):
+                    if item.name.startswith("."):
+                        continue
+                    if item.is_dir():
+                        self.file_list.insert("end", item.name + "/")
+            except PermissionError:
+                pass
+
+        def select_directory(self):
+            self.result = str(self.current_path)
+            self.dialog.destroy()
+
+    dialog = DirDialog(title, [("Folder", "*")], initial_dir)
+    return dialog.result
+
 
 # --- GUI setup ---
-root = ThemedTk(theme="clearlooks")
+root = tkinter.Tk()
 root.title("KiCad Symbol and Footprint Installer")
 root.geometry("600x800")
 root.resizable(False, False)
+
+# Set modern theme (light or dark)
+
+
+# Set window icon (will use first available)
+icon_paths = [
+    "/usr/share/icons/hicolor/48x48/apps/kicad.png",
+    "/usr/share/pixmaps/kicad.png",
+    "/usr/share/icons/Zorin/scalable/apps/utilities-terminal.svg",
+]
+for icon_path in icon_paths:
+    if os.path.exists(icon_path):
+        try:
+            root.iconphoto(False, PhotoImage(file=icon_path))
+            break
+        except Exception:
+            pass
 
 symbolpath = "No path chosen"
 footprintpath = "No path chosen"
@@ -71,41 +457,13 @@ def get_lib_name(suffix=""):
 
 # --- Symbol library handling ---
 def create_uploaded_symbol_lib(path_root, suffix=""):
-    """Ensure Uploaded[_suffix].kicad_sym exists and is registered in sym-lib-table."""
-    symbol_dir = get_symbol_dir(path_root)
-    if not symbol_dir:
-        showerror("Error", "Could not find symbol library directory")
-        return None
+    """Not used - kept for compatibility."""
+    return None
 
-    lib_name = get_lib_name(suffix)
-    lib_file = os.path.join(symbol_dir, f"{lib_name}.kicad_sym")
 
-    # Create library file if it doesn't exist
-    if not os.path.exists(lib_file):
-        with open(lib_file, "w") as f:
-            f.write(f"(kicad_symbol_lib (name {lib_name}) (type Legacy))\n")
-
-    # Register library in sym-lib-table if missing
-    sym_table_path = os.path.join(symbol_dir, "sym-lib-table")
-    if os.path.exists(sym_table_path):
-        with open(sym_table_path, "r") as f:
-            content = f.read()
-        if f'("{lib_name}"' not in content:
-            entry = f"""  (lib
-    (name {lib_name})
-    (type Legacy)
-    (uri "{lib_file}")
-    (options "")
-    (descr "Uploaded symbols")
-  )
-"""
-            content = content.rstrip()
-            if content.endswith(")"):
-                content = content[:-1] + entry + ")\n"
-            with open(sym_table_path, "w") as f:
-                f.write(content)
-
-    return lib_file
+def add_symbol_to_lib(lib_file, symbol_content):
+    """Not used."""
+    return False
 
 
 # --- Footprint library handling ---
@@ -113,7 +471,11 @@ def create_uploaded_footprint_lib(path_root, suffix=""):
     """Ensure Uploaded[_suffix].pretty exists and is registered in fp-lib-table."""
     footprint_dir = get_footprint_dir(path_root)
     if not footprint_dir:
-        showerror("Error", "Could not find footprint library directory")
+        pymsgbox.alert(
+            "Could not find footprint library directory",
+            "Error",
+            # iconType not supported by pymsgbox
+        )
         return None
 
     lib_name = get_lib_name(suffix)
@@ -129,14 +491,14 @@ def create_uploaded_footprint_lib(path_root, suffix=""):
         content = f.read()
 
     if f'("{lib_name}"' not in content and f"{lib_name}.pretty" not in content:
-        entry = f"""  (lib
-    (name {lib_name})
-    (type KiCad)
+        entry = f'''  (lib
+    (name "{lib_name}")
+    (type "KiCad")
     (uri "{lib_path}")
     (options "")
     (descr "Uploaded footprints")
   )
-"""
+'''
         content = content.rstrip()
         if content.endswith(")"):
             content = content[:-1] + entry + ")\n"
@@ -163,21 +525,35 @@ def copy_with_progress(src, dst, progress_weight=100):
 
 
 # --- KiCad library path selection ---
-if path_exist:
-    with open("kicad_path.txt", "r") as f:
-        path = f.read()
-else:
-    showinfo(
-        "Select Your KiCad Library Folder",
+path = None  # Global variable to store KiCad library path
+
+
+def setup_kicad_path():
+    """Setup KiCad path after GUI is ready."""
+    global path
+
+    if path_exist:
+        with open("kicad_path.txt", "r") as f:
+            path = f.read()
+        return
+
+    # Show message and prompt for directory after window is ready
+    pymsgbox.alert(
         "Please select the folder containing your KiCad user libraries (sym-lib-table / fp-lib-table).",
+        "Select Your KiCad Library Folder",
     )
-    path = askdirectory(title="Select KiCad Library Folder")
-    if not is_kicad_lib_path(path):
-        showerror(
-            "Invalid Library Path",
+
+    # Use tkinter's built-in directory picker (more reliable)
+    path = filedialog.askdirectory(title="Select KiCad Library Folder")
+
+    if not path or not is_kicad_lib_path(path):
+        pymsgbox.alert(
             "Selected folder is not a valid KiCad library folder.",
+            "Invalid Library Path",
+            # iconType not supported by pymsgbox
         )
         exit()
+
     with open("kicad_path.txt", "w") as f:
         f.write(path)
 
@@ -185,8 +561,9 @@ else:
 # --- GUI callbacks ---
 def upload_symbol():
     global symbolpath
-    symbolpath = askopenfilename(
-        title="Select Symbol File", filetypes=[("KiCad Symbol Files", "*.kicad_sym")]
+    symbolpath = filedialog.askopenfilename(
+        title="Select Symbol File",
+        filetypes=[("KiCad Symbol Files", "*.kicad_sym"), ("All Files", "*.*")],
     )
     if symbolpath:
         selectedfilesym.config(text=os.path.basename(symbolpath))
@@ -194,9 +571,9 @@ def upload_symbol():
 
 def upload_footprint():
     global footprintpath
-    footprintpath = askopenfilename(
+    footprintpath = filedialog.askopenfilename(
         title="Select Footprint File",
-        filetypes=[("KiCad Footprint Files", "*.kicad_mod")],
+        filetypes=[("KiCad Footprint Files", "*.kicad_mod"), ("All Files", "*.*")],
     )
     if footprintpath:
         selectedfilefoot.config(text=os.path.basename(footprintpath))
@@ -204,9 +581,13 @@ def upload_footprint():
 
 def upload_step():
     global steppath
-    steppath = askopenfilename(
+    steppath = filedialog.askopenfilename(
         title="Select STEP 3D Model",
-        filetypes=[("STEP 3D Models", "*.step"), ("STEP Models", "*.stp")],
+        filetypes=[
+            ("STEP Models", "*.step"),
+            ("STEP Models", "*.stp"),
+            ("All Files", "*.*"),
+        ],
     )
     if steppath:
         selectedfilestep.config(text=os.path.basename(steppath))
@@ -215,7 +596,11 @@ def upload_step():
 def upload_data():
     global upload_count
     if not symbolpath and not footprintpath:
-        showerror("Error", "Please select at least a symbol or footprint file")
+        pymsgbox.alert(
+            "Please select at least a symbol or footprint file",
+            "Error",
+            # iconType not supported by pymsgbox
+        )
         return
 
     try:
@@ -226,50 +611,66 @@ def upload_data():
         lib_path = None
 
         # --- Symbol ---
-        # Copy symbol as separate file and register as library
+        # Upload as individual .kicad_sym file registered in sym-lib-table
         if symbolpath and symbolpath != "No path chosen":
             symbol_dir = get_symbol_dir(path)
-            if symbol_dir:
-                sym_lib_name = get_lib_name(suffix)
+            if symbol_dir and os.path.exists(symbolpath):
+                filename = os.path.basename(symbolpath)
+                dest = os.path.join(symbol_dir, filename)
 
-                # Copy symbol file directly to library directory
-                if os.path.exists(symbolpath):
-                    filename = os.path.basename(symbolpath)
-                    dest = os.path.join(symbol_dir, filename)
-                    # If file already exists, skip copying (it's already registered)
-                    if not os.path.exists(dest):
-                        # Read, strip leading whitespace, and write to fix encoding issues
-                        with open(symbolpath, "r", encoding="utf-8") as f:
-                            content = f.read().lstrip()
-                        with open(dest, "w", encoding="utf-8") as f:
+                # Copy if doesn't exist
+                if not os.path.exists(dest):
+                    with open(symbolpath, "r", encoding="utf-8") as f:
+                        content = f.read().lstrip()
+                    with open(dest, "w", encoding="utf-8") as f:
+                        f.write(content)
+
+                # Register in sym-lib-table
+                sym_table_path = os.path.join(symbol_dir, "sym-lib-table")
+                lib_name = os.path.splitext(filename)[0]
+                if os.path.exists(sym_table_path):
+                    with open(sym_table_path, "r") as f:
+                        content = f.read()
+                    if (
+                        f'"{lib_name}"' not in content
+                        and os.path.basename(dest) not in content
+                    ):
+                        entry = f'  (lib (name "{lib_name}") (type "KiCad") (uri "{dest}") (options "") (descr "Uploaded symbol"))\n'
+                        content = content.rstrip()
+                        if content.endswith(")"):
+                            content = content[:-1]
+                        content = content + entry + ")\n"
+                        with open(sym_table_path, "w") as f:
                             f.write(content)
 
-                    # Register as a separate library entry for each file
-                    sym_table_path = os.path.join(symbol_dir, "sym-lib-table")
-                    if os.path.exists(sym_table_path):
-                        with open(sym_table_path, "r") as f:
-                            content = f.read()
-                        lib_name = os.path.splitext(filename)[0]
-                        if (
-                            f'"{lib_name}"' not in content
-                            and os.path.basename(dest) not in content
-                        ):
-                            entry = f'  (lib (name "{lib_name}") (type "KiCad") (uri "{dest}") (options "") (descr "Uploaded symbol"))\n'
-                            content = content.rstrip()
-                            if content.endswith(")"):
-                                content = content[:-1] + entry + ")"
-                            with open(sym_table_path, "w") as f:
-                                f.write(content)
-
-                    progress["value"] = 50
-                    root.update()
+                progress["value"] = 50
+                root.update()
 
         # --- Footprint ---
         if footprintpath and footprintpath != "No path chosen":
             lib_path = create_uploaded_footprint_lib(path, suffix)
             if lib_path:
-                dest = get_unique_filename(lib_path, os.path.basename(footprintpath))
-                copy_with_progress(footprintpath, dest, 40)
+                # Check if footprint already exists in library by comparing content
+                footprint_basename = os.path.basename(footprintpath)
+                existing_files = os.listdir(lib_path)
+                file_exists = False
+                for f in existing_files:
+                    f_path = os.path.join(lib_path, f)
+                    if os.path.isfile(f_path):
+                        try:
+                            with (
+                                open(footprintpath, "rb") as sf,
+                                open(f_path, "rb") as df,
+                            ):
+                                if sf.read() == df.read():
+                                    file_exists = True
+                                    break
+                        except:
+                            pass
+
+                if not file_exists:
+                    dest = get_unique_filename(lib_path, footprint_basename)
+                    copy_with_progress(footprintpath, dest, 40)
 
         # --- Optional STEP ---
         if steppath and steppath != "No path chosen":
@@ -280,10 +681,11 @@ def upload_data():
         progress["value"] = 100
         upload_count += 1
     except Exception as e:
-        showerror("Error", f"Failed to upload files: {e}")
+        pymsgbox.alert(f"Failed to upload files: {e}", "Error")
 
 
 # --- GUI layout ---
+sv_ttk.set_theme("dark")
 ttk.Label(root, text="Send to KiCad", font=("Arial", 20, "bold")).pack(pady=20)
 
 progress = ttk.Progressbar(root, orient="horizontal", mode="determinate", length=400)
@@ -309,5 +711,8 @@ selectedfilestep = ttk.Label(root, text=steppath, font=("Arial", 10))
 selectedfilestep.pack(pady=10)
 
 ttk.Button(root, text="Send to KiCad", command=upload_data).pack(pady=20)
+
+# Setup KiCad path (show dialog if first run) - must be after GUI is ready
+setup_kicad_path()
 
 root.mainloop()

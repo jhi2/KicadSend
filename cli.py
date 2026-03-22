@@ -47,6 +47,16 @@ def get_lib_name(suffix=""):
     return "Uploaded"
 
 
+def create_uploaded_symbol_lib(path_root, suffix=""):
+    """Not used - kept for compatibility."""
+    return None
+
+
+def add_symbol_to_lib(lib_file, symbol_content):
+    """Not used."""
+    return False
+
+
 def create_uploaded_lib(path_root, suffix=""):
     """Prepare a footprint library folder and register it in fp-lib-table."""
     footprint_dir = get_footprint_dir(path_root)
@@ -67,14 +77,14 @@ def create_uploaded_lib(path_root, suffix=""):
         content = f.read()
 
     if f'("{lib_name}"' not in content and f"{lib_name}.pretty" not in content:
-        entry = f"""  (lib
-    (name {lib_name})
-    (type KiCad)
+        entry = f'''  (lib
+    (name "{lib_name}")
+    (type "KiCad")
     (uri "{lib_path}")
     (options "")
     (descr "Uploaded footprints")
   )
-"""
+'''
         content = content.rstrip()
         if content.endswith(")"):
             content = content[:-1] + entry + ")\n"
@@ -100,7 +110,7 @@ def upload(
     success = True
     lib_path = None
 
-    # Upload symbol - copy file directly
+    # Upload symbol - individual .kicad_sym file registered in sym-lib-table
     if symbol:
         if not os.path.exists(symbol):
             print(f"Error: Symbol file not found: {symbol}")
@@ -110,20 +120,20 @@ def upload(
             if symbol_dir:
                 filename = os.path.basename(symbol)
                 dest = os.path.join(symbol_dir, filename)
-                # If file already exists, skip copying
+
+                # Copy if doesn't exist
                 if not os.path.exists(dest):
-                    # Read, strip leading whitespace, and write to fix encoding issues
                     with open(symbol, "r", encoding="utf-8") as f:
                         content = f.read().lstrip()
                     with open(dest, "w", encoding="utf-8") as f:
                         f.write(content)
 
-                # Register as separate library
+                # Register in sym-lib-table
                 sym_table_path = os.path.join(symbol_dir, "sym-lib-table")
+                lib_name = os.path.splitext(filename)[0]
                 if os.path.exists(sym_table_path):
                     with open(sym_table_path, "r") as f:
                         content = f.read()
-                    lib_name = os.path.splitext(filename)[0]
                     if (
                         f'"{lib_name}"' not in content
                         and os.path.basename(dest) not in content
@@ -131,7 +141,8 @@ def upload(
                         entry = f'  (lib (name "{lib_name}") (type "KiCad") (uri "{dest}") (options "") (descr "Uploaded symbol"))\n'
                         content = content.rstrip()
                         if content.endswith(")"):
-                            content = content[:-1] + entry + ")"
+                            content = content[:-1]
+                        content = content + entry + ")\n"
                         with open(sym_table_path, "w") as f:
                             f.write(content)
 
