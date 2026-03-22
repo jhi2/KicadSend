@@ -1,3 +1,4 @@
+# ALERT! THE APP CORrUPTS YOUR SYM-LIB-TABLE AND FP-LIB-TABLE! I WILL SEND A FIX SOON.
 # KiCad Uploader
 
 Upload KiCad symbols, footprints, and 3D models to your local library.
