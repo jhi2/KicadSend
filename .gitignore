@@ -1,1 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# App
 kicad_path.txt
+
+# OS
+.DS_Store
+Thumbs.db

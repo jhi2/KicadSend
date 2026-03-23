@@ -14,6 +14,7 @@ KicadSend is a simple tool to help you quickly add custom components to your KiC
 - **Custom Libraries**: Create separate footprint libraries with custom suffixes
 - **Duplicate Prevention**: Won't re-upload files that already exist in your library
 - **Progress Feedback**: Visual progress bar for large files
+- **SamacSys Integration**: Search and import components from ComponentSearchEngine.com
 
 ## Requirements
 
@@ -109,6 +110,43 @@ Make sure to restart KiCad after uploading. Library tables are read at startup.
 
 ### Duplicate files
 The tool automatically checks if files already exist by comparing content, so won't re-upload duplicates.
+
+## SamacSys Integration (samacsys.py)
+
+Search and import components from [ComponentSearchEngine.com](https://componentsearchengine.com) - a free database with 15+ million components.
+
+### Setup
+
+1. Create a free account at [componentsearchengine.com](https://componentsearchengine.com/register)
+2. Optionally install the [Library Loader](https://componentsearchengine.com/library_loader.php) desktop app
+
+### Usage
+
+```bash
+# Search for a component
+python samacsys.py "STM32F103"
+
+# Download and import
+python samacsys.py "STM32F103" --download --import --kicad-path ~/.config/kicad/9.0
+```
+
+With environment variables:
+```bash
+export SAMACSYS_EMAIL=your@email.com
+export SAMACSYS_PASSWORD=yourpassword
+python samacsys.py "NE555" --download
+```
+
+### Alternative: Manual Download Flow
+
+If the API is limited, use this workflow:
+
+1. Search at [componentsearchengine.com](https://componentsearchengine.com)
+2. Download the KiCad library file
+3. Import with KicadSend:
+   ```bash
+   python cli.py ~/.config/kicad/9.0 -s downloaded.kicad_sym
+   ```
 
 ## License
 

@@ -5,7 +5,256 @@ import pymsgbox
 import sv_ttk
 import os
 import shutil
+import threading
+import time
+import zipfile
 from pathlib import Path
+import webbrowser
+
+
+# --- SnapEDA Download Watcher ---
+class SnapEDAWatcher:
+    """Watches for downloaded files and auto-imports them."""
+
+    def __init__(self, kicad_path, callback=None):
+        self.kicad_path = kicad_path
+        self.callback = callback
+        self.running = False
+        self.known_files = set()
+
+        # Common download directories
+        self.download_dirs = [
+            os.path.expanduser("~/Downloads"),
+            os.path.expanduser("~/downloads"),
+        ]
+
+        # Initialize known files
+        self._scan_download_dirs()
+
+    def _scan_download_dirs(self):
+        """Get initial list of files."""
+        for d in self.download_dirs:
+            if os.path.isdir(d):
+                for f in os.listdir(d):
+                    self.known_files.add(os.path.join(d, f))
+
+    def start(self):
+        """Start watching for new downloads."""
+        self.running = True
+        thread = threading.Thread(target=self._watch_loop, daemon=True)
+        thread.start()
+
+    def stop(self):
+        """Stop watching."""
+        self.running = False
+
+    def _watch_loop(self):
+        """Watch loop that checks for new files."""
+        while self.running:
+            time.sleep(2)
+            self._check_for_new_files()
+
+    def _check_for_new_files(self):
+        """Check for new zip files and auto-import."""
+        for d in self.download_dirs:
+            if not os.path.isdir(d):
+                continue
+
+            for f in os.listdir(d):
+                filepath = os.path.join(d, f)
+
+                # Skip if we already knew about it
+                if filepath in self.known_files:
+                    continue
+
+                # Skip non-zip files
+                if not f.lower().endswith(".zip"):
+                    continue
+
+                # Skip if still being written (check if file is stable)
+                try:
+                    if os.path.getsize(filepath) < 1000:
+                        continue  # File still being written
+                except:
+                    continue
+
+                # Found a new zip! Process it
+                self.known_files.add(filepath)
+                self._process_zip(filepath)
+
+    def _process_zip(self, zip_path):
+        """Extract and import a downloaded zip file."""
+        print(f"Found new download: {zip_path}")
+
+        try:
+            extract_dir = zip_path.replace(".zip", "")
+
+            # Extract
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+
+            # Find KiCad files
+            extract_path = Path(extract_dir)
+            kicad_sym = list(extract_path.glob("*.kicad_sym"))
+            kicad_mod = list(extract_path.glob("*.kicad_mod"))
+
+            if not kicad_sym and not kicad_mod:
+                print("No KiCad files found in zip")
+                return
+
+            # Import files
+            imported = []
+
+            # Get symbol directory
+            symbol_dir = get_symbol_dir(self.kicad_path)
+
+            # Import symbols
+            for sym in kicad_sym:
+                if symbol_dir:
+                    dest = os.path.join(symbol_dir, sym.name)
+                    if not os.path.exists(dest):
+                        shutil.copy2(sym, dest)
+                        imported.append(f"Symbol: {sym.name}")
+
+                        # Register in sym-lib-table using the copied path
+                        self._register_symbol(dest, symbol_dir)
+
+            # Import footprints - create library for each symbol
+            for sym in kicad_sym:
+                sym_name = sym.stem
+                # Create a library folder named after the symbol (like SnapEDA expects)
+                footprint_dir = get_footprint_dir(self.kicad_path)
+                if footprint_dir:
+                    footprint_lib = os.path.join(footprint_dir, f"{sym_name}.pretty")
+                    os.makedirs(footprint_lib, exist_ok=True)
+
+                    # Register in fp-lib-table if not already
+                    self._register_footprint_lib(footprint_lib, sym_name)
+
+                    # Copy footprints matching this symbol
+                    for mod in kicad_mod:
+                        dest = os.path.join(footprint_lib, mod.name)
+                        if not os.path.exists(dest):
+                            shutil.copy2(mod, dest)
+                            imported.append(f"Footprint: {mod.name}")
+
+            # Also copy to default snapeda folder as fallback
+            footprint_lib = create_uploaded_footprint_lib(self.kicad_path, "snapeda")
+            if footprint_lib:
+                for mod in kicad_mod:
+                    dest = os.path.join(footprint_lib, mod.name)
+                    if not os.path.exists(dest):
+                        shutil.copy2(mod, dest)
+
+            # Copy 3D models too
+            step_files = list(extract_path.glob("*.step")) + list(
+                extract_path.glob("*.stp")
+            )
+            for step in step_files:
+                if footprint_lib:
+                    dest = os.path.join(footprint_lib, step.name)
+                    if not os.path.exists(dest):
+                        shutil.copy2(step, dest)
+                        imported.append(f"3D: {step.name}")
+
+            # Notify user
+            if imported and self.callback:
+                self.callback(imported)
+            elif imported:
+                print(f"Imported: {imported}")
+
+        except Exception as e:
+            print(f"Error processing zip: {e}")
+
+    def _register_symbol(self, sym_path, symbol_dir):
+        """Register symbol in sym-lib-table."""
+        sym_path = Path(sym_path)
+        sym_table_path = os.path.join(symbol_dir, "sym-lib-table")
+        if not os.path.exists(sym_table_path):
+            return
+
+        lib_name = sym_path.stem
+        with open(sym_table_path, "r") as f:
+            content = f.read()
+
+        # Check if already registered
+        if f'"{lib_name}"' not in content and sym_path.name not in content:
+            entry = f'  (lib (name "{lib_name}") (type "KiCad") (uri "{sym_path}") (options "") (descr "Imported from SnapEDA"))\n'
+            content = content.rstrip()
+            if content.endswith(")"):
+                content = content[:-1]
+            content = content + entry + ")\n"
+
+            with open(sym_table_path, "w") as f:
+                f.write(content)
+
+    def _register_footprint_lib(self, footprint_lib_path, lib_name):
+        """Register footprint library in fp-lib-table."""
+        footprint_dir = get_footprint_dir(self.kicad_path)
+        if not footprint_dir:
+            return
+
+        fp_table_path = os.path.join(footprint_dir, "fp-lib-table")
+        if not os.path.exists(fp_table_path):
+            with open(fp_table_path, "w") as f:
+                f.write("(fp_lib_table\n)\n")
+
+        with open(fp_table_path, "r") as f:
+            content = f.read()
+
+        # Check if already registered
+        if f'"{lib_name}"' not in content and f"{lib_name}.pretty" not in content:
+            entry = f'''  (lib
+    (name "{lib_name}")
+    (type "KiCad")
+    (uri "{footprint_lib_path}")
+    (options "")
+    (descr "Imported from SnapEDA")
+  )
+'''
+            content = content.rstrip()
+            if content.endswith(")"):
+                content = content[:-1] + entry + ")\n"
+
+            with open(fp_table_path, "w") as f:
+                f.write(content)
+
+
+# --- SnapEDA Search ---
+snapeda_watcher = None
+
+
+def open_snapeda_search():
+    """Open SnapEDA in browser for searching and downloading."""
+    import webbrowser
+
+    global snapeda_watcher
+
+    # Start watcher if we have a path
+    if path:
+        # Create callback that runs on main thread
+        def on_import(imported_files):
+            msg = "Successfully imported:\n\n" + "\n".join(imported_files)
+            msg += "\n\nRestart KiCad to see the new components!"
+            root.after(0, lambda: pymsgbox.alert(msg, "Import Complete"))
+
+        snapeda_watcher = SnapEDAWatcher(path, callback=on_import)
+        snapeda_watcher.start()
+        print("Started watching for downloads...")
+
+    # Show instructions to user
+    pymsgbox.alert(
+        "SnapEDA Component Search\n\n"
+        "1. A browser will open to snapeda.com\n"
+        "2. Search for your component (e.g., STM32F103)\n"
+        "3. Click 'Download' and select 'KiCad V6+'\n"
+        "4. The downloaded ZIP will be automatically imported!\n\n"
+        "Note: Make sure to download to your Downloads folder.",
+        "SnapEDA Search",
+    )
+
+    # Open in default browser
+    webbrowser.open("https://www.snapeda.com/search")
 
 
 # --- Custom styled file dialog using sv-ttk ---
@@ -21,7 +270,7 @@ class StyledFileDialog:
         # Create dialog window
         self.dialog = tkinter.Toplevel(root)
         self.dialog.title(title)
-        self.dialog.geometry("750x500")
+        self.dialog.geometry("750x580")
         self.dialog.transient(root)
         self.dialog.grab_set()
 
@@ -377,7 +626,7 @@ def styled_ask_directory(title, initial_dir=None):
 # --- GUI setup ---
 root = tkinter.Tk()
 root.title("KiCad Symbol and Footprint Installer")
-root.geometry("600x800")
+root.geometry("600x900")
 root.resizable(False, False)
 
 # Set modern theme (light or dark)
@@ -709,6 +958,27 @@ ttk.Label(root, text="3D Model (STEP)", font=("Arial", 12)).pack(pady=10)
 ttk.Button(root, text="Upload STEP Model", command=upload_step).pack(pady=10)
 selectedfilestep = ttk.Label(root, text=steppath, font=("Arial", 10))
 selectedfilestep.pack(pady=10)
+
+# --- SnapEDA Search Section ---
+ttk.Separator(root, orient="horizontal").pack(fill="x", pady=20)
+
+ttk.Label(root, text="SnapEDA Component Search", font=("Arial", 14, "bold")).pack(
+    pady=10
+)
+ttk.Label(
+    root,
+    text="Search & download components from snapeda.com",
+    font=("Arial", 9),
+    foreground="gray",
+).pack(pady=5)
+ttk.Button(
+    root,
+    text="🔍 Open SnapEDA Search",
+    command=open_snapeda_search,
+    style="Accent.TButton",
+).pack(pady=10)
+
+ttk.Separator(root, orient="horizontal").pack(fill="x", pady=20)
 
 ttk.Button(root, text="Send to KiCad", command=upload_data).pack(pady=20)
 
