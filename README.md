@@ -14,7 +14,7 @@ KicadSend is a simple tool to help you quickly add custom components to your KiC
 - **Custom Libraries**: Create separate footprint libraries with custom suffixes
 - **Duplicate Prevention**: Won't re-upload files that already exist in your library
 - **Progress Feedback**: Visual progress bar for large files
-- **SamacSys Integration**: Search and import components from ComponentSearchEngine.com
+- **SnapEDA Integration**: Search and import components from SnapEDA.com
 
 ## Requirements
 
@@ -111,42 +111,19 @@ Make sure to restart KiCad after uploading. Library tables are read at startup.
 ### Duplicate files
 The tool automatically checks if files already exist by comparing content, so won't re-upload duplicates.
 
-## SamacSys Integration (samacsys.py)
+## SnapEDA Integration
 
-Search and import components from [ComponentSearchEngine.com](https://componentsearchengine.com) - a free database with 15+ million components.
-
-### Setup
-
-1. Create a free account at [componentsearchengine.com](https://componentsearchengine.com/register)
-2. Optionally install the [Library Loader](https://componentsearchengine.com/library_loader.php) desktop app
+Search and import components from [SnapEDA.com](https://www.snapeda.com) - a free database with millions of components.
 
 ### Usage
 
-```bash
-# Search for a component
-python samacsys.py "STM32F103"
+1. Click **"Open SnapEDA Search"** in the GUI
+2. A browser will open to snapeda.com
+3. Search for your component (e.g., "RP2040")
+4. Click "Download" and select "KiCad V6+"
+5. The downloaded ZIP will be automatically imported!
 
-# Download and import
-python samacsys.py "STM32F103" --download --import --kicad-path ~/.config/kicad/9.0
-```
-
-With environment variables:
-```bash
-export SAMACSYS_EMAIL=your@email.com
-export SAMACSYS_PASSWORD=yourpassword
-python samacsys.py "NE555" --download
-```
-
-### Alternative: Manual Download Flow
-
-If the API is limited, use this workflow:
-
-1. Search at [componentsearchengine.com](https://componentsearchengine.com)
-2. Download the KiCad library file
-3. Import with KicadSend:
-   ```bash
-   python cli.py ~/.config/kicad/9.0 -s downloaded.kicad_sym
-   ```
+The tool watches your Downloads folder and automatically imports any SnapEDA ZIP files. Each component gets its own footprint library named after the component (e.g., `RP2040.pretty`).
 
 ## License
 
