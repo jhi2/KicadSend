@@ -158,19 +158,6 @@ class SnapEDAWatcher:
                             shutil.copy2(step, step_dest)
                             imported.append(f"3D: {step.name}")
 
-            # Also copy to default folder
-            default_lib = ensure_footprint_lib(self.kicad_path, "snapeda")
-            if default_lib:
-                for mod in kicad_mod:
-                    dest = os.path.join(default_lib, mod.name)
-                    if not os.path.exists(dest):
-                        shutil.copy2(mod, dest)
-
-                for step in step_files:
-                    dest = os.path.join(default_lib, step.name)
-                    if not os.path.exists(dest):
-                        shutil.copy2(step, dest)
-
             return imported
 
         except Exception as e:
